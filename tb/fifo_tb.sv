@@ -1,10 +1,14 @@
 `timescale 1ns / 1ps
 
+`include "./random_scenario.sv"
+
 module fifo_tb #(
   parameter int    DWIDTH    = 8,
   parameter int    AWIDTH    = 4,
-  parameter string SHOWAHEAD = "OFF"
+  parameter string SHOWAHEAD = "ON"
 );
+
+localparam int FIFO_DEPTH = 2**AWIDTH;
 
 bit clk_i  = 0;
 bit srst_i = 0;
@@ -26,7 +30,7 @@ logic                  custom_fifo_empty_o;
 logic                  custom_fifo_full_o;
 logic [AWIDTH - 1 : 0] custom_fifo_usedw_o;
 
-event check_done;
+logic [AWIDTH : 0] ref_usedw;
 
 altera_scfifo #(
   .SHOWAHEAD ( SHOWAHEAD        )
@@ -64,101 +68,73 @@ fifo #(
   .usedw_o   ( custom_fifo_usedw_o )
 );
 
-task automatic single_write();
-  wait( !alt_fifo_full_o );
-  wait( check_done.triggered );
-  wrreq_i = 1'b1;
-  data_i  = $random;
-  @( posedge clk_i );
-  wait( check_done.triggered );
-  wrreq_i = 1'b0;
-endtask : single_write
-
-task automatic single_read();
-  wait( !alt_fifo_empty_o );
-  wait( check_done.triggered );
-  rdreq_i = 1'b1;
-  @( posedge clk_i );
-  wait( check_done.triggered );
-  rdreq_i = 1'b0;
-endtask : single_read
-
-task automatic write_full_fifo( input bit pause_write );
-  fork : write_loop
-    wait( alt_fifo_full_o );
-    while( 1 )
-      begin
-        wait( check_done.triggered );
-        if( pause_write )
-          wrreq_i = $urandom_range( 1 );
-        else
-          wrreq_i = 1'b1;
-        data_i  = $random;
-        @( posedge clk_i );
-      end
-  join_any
-  disable write_loop;
-  wait( check_done.triggered );
-  wrreq_i = 1'b0;
-endtask : write_full_fifo
-
-task automatic read_full_fifo( input bit pause_read );
-  fork : read_loop
-    wait( alt_fifo_empty_o );
-    while( 1 )
-      begin
-        wait( check_done.triggered );
-        if( pause_read )
-          rdreq_i = $urandom_range( 1 );
-        else
-          rdreq_i = 1'b1;
-        @( posedge clk_i );
-      end
-  join_any
-  disable read_loop;
-  wait( check_done.triggered );
-  rdreq_i = 1'b0;
-endtask : read_full_fifo
-
-task automatic full_bound_test();
-  write_full_fifo( 0 );
-  single_read();
-  fork
-    single_write();
-    single_read();
-  join
-  single_write();
-endtask : full_bound_test
-
-task automatic empty_bound_test();
-  read_full_fifo( 0 );
-  single_write();
-  fork
-    single_read();
-    single_write();
-  join
-  single_read();
-endtask : empty_bound_test
-
-task automatic control_signals_check();
+task automatic model ();
+  ref_usedw  = 0;
   forever
     begin
       @( posedge clk_i );
-      if( alt_fifo_empty_o !== custom_fifo_empty_o )
+      ref_usedw <= ref_usedw + wrreq_i - rdreq_i;
+    end
+endtask
+
+task automatic write_only ();
+  @( posedge clk_i );
+  wrreq_i <= ( ref_usedw < ( FIFO_DEPTH - 1 ) ) || ( ( ref_usedw == ( FIFO_DEPTH - 1 ) ) && !wrreq_i );
+  rdreq_i <= 1'b0;
+  data_i  <= $urandom();
+endtask
+
+task automatic read_only ();
+  @( posedge clk_i );
+  wrreq_i <= 1'b0;
+  rdreq_i <= ( ref_usedw > 1 ) || ( ( ref_usedw == 1 ) && !rdreq_i );
+endtask
+
+task automatic read_write ();
+  @( posedge clk_i );
+  wrreq_i <= ( ref_usedw < ( FIFO_DEPTH - 1 ) ) || ( ( ref_usedw == ( FIFO_DEPTH - 1 ) ) && !wrreq_i );
+  rdreq_i <= ( ref_usedw > 1                  ) || ( ( ref_usedw == 1                  ) && !rdreq_i );
+  data_i  <= $urandom();
+endtask
+
+task automatic idle ();
+  @( posedge clk_i );
+  wrreq_i <= 1'b0;
+  rdreq_i <= 1'b0;
+endtask
+
+task automatic run_tasks_scenario ( input bit [1:0] tasks_scenario[$] );
+  bit [1:0] current_task;
+  while( tasks_scenario.size() !== 0 )
+    begin
+      current_task = tasks_scenario.pop_front();
+      case( current_task )
+        2'd0 : idle();
+        2'd1 : write_only();
+        2'd2 : read_only();
+        2'd3 : read_write();
+      endcase
+    end
+  idle();
+endtask
+
+task automatic control_signals_check ();
+  forever
+    begin
+      @( posedge clk_i );
+      if( alt_fifo_empty_o != custom_fifo_empty_o )
         begin
           $display( "%0t : Unexpected empty flag behavior", $time );
-          $display( "Expected : %b", alt_fifo_empty_o );
-          $display( "Observed : %b", custom_fifo_empty_o );
           $stop();
         end
-      if( alt_fifo_full_o !== custom_fifo_full_o )
+
+      if( alt_fifo_full_o != custom_fifo_full_o )
         begin
           $display( "%0t : Unexpected full flag behavior", $time );
-          $display( "Expected : %b", alt_fifo_full_o );
-          $display( "Observed : %b", custom_fifo_full_o );
           $stop();
         end
-      if( alt_fifo_usedw_o !== custom_fifo_usedw_o )
+      
+      if( alt_fifo_usedw_o != custom_fifo_usedw_o )
         begin
           $display( "%0t : Used words mismatch", $time );
           $display( "Expected : %0d", alt_fifo_usedw_o );
@@ -166,48 +142,38 @@ task automatic control_signals_check();
           $stop();
         end
     end
-endtask : control_signals_check
+endtask
 
-task automatic data_check();
+task automatic data_check ();
   forever
-    if( SHOWAHEAD == "OFF" )
-      begin
-        @( posedge clk_i );
-        if( rdreq_i )
-          do
-            begin
-              -> check_done;
-              @( posedge clk_i );
-              if( alt_fifo_q_o !== custom_fifo_q_o )
-                begin
-                  $display( "%0t : Data word mismatch", $time );
-                  $display( "Expected : %h", alt_fifo_q_o );
-                  $display( "Observed : %h", custom_fifo_q_o );
-                  $stop();
-                end
-            end
-          while( rdreq_i );
-        -> check_done;
-      end
-    else if( SHOWAHEAD == "ON" )
-      begin
-        @( posedge clk_i );
-        if( rdreq_i )
-          if( alt_fifo_q_o !== custom_fifo_q_o )
-            begin
-              $display( "%0t : Data word mismatch", $time );
-              $display( "Expected : %h", alt_fifo_q_o );
-              $display( "Observed : %h", custom_fifo_q_o );
-              $stop();
-            end
-        -> check_done;
-      end
-endtask : data_check
+    begin
+      @( posedge clk_i );
+      if( SHOWAHEAD == "OFF" )
+        if( alt_fifo_q_o != custom_fifo_q_o )
+          begin
+            $display( "%0t : Data word mismatch", $time );
+            $display( "Expected : %h", alt_fifo_q_o );
+            $display( "Observed : %h", custom_fifo_q_o );
+            $stop();
+          end
+      else if( SHOWAHEAD == "ON" )
+        if( rdreq_i && ( alt_fifo_q_o != custom_fifo_q_o ) )
+          begin
+            $display( "%0t : Data word mismatch", $time );
+            $display( "Expected : %h", alt_fifo_q_o );
+            $display( "Observed : %h", custom_fifo_q_o );
+            $stop();
+          end
+    end
+endtask
 
 always #5 clk_i = !clk_i;
 
+random_scenario scenario;
+
 initial
   begin
+    $timeformat( -9, 0, " ns", 20 );
     wrreq_i = 1'b0;
     data_i  = '0;
     rdreq_i = 1'b0;
@@ -217,29 +183,42 @@ initial
     @( posedge clk_i );
     srst_i = 1'b0;
 
+    repeat(5) @( posedge clk_i );
+
     fork
-      control_signals_check();
-      data_check();
+      control_signals_check ();
+      data_check ();
+      model ();
     join_none;
 
-    // full and empty flags test
-    write_full_fifo( 0 );
-    read_full_fifo( 0 );
-    repeat(5) @( posedge clk_i );
-    
-    write_full_fifo( 1 );
-    read_full_fifo( 1 );
-    repeat(5) @( posedge clk_i );
+    scenario = new();
+    scenario.set_probability(0, 100, 0, 0);
+    scenario.get_tasks_scenario( 20 );
+    run_tasks_scenario( scenario.tasks_scenario );
 
-    // full and empty bound condition test
-    full_bound_test();
-    repeat(5) @( posedge clk_i );
+    scenario = new();
+    scenario.set_probability(0, 0, 100, 0);
+    scenario.get_tasks_scenario( 20 );
+    run_tasks_scenario( scenario.tasks_scenario );
+ 
+    scenario = new(); 
+    scenario.set_probability(30, 30, 30, 30);
+    scenario.get_tasks_scenario( 100 );
+    run_tasks_scenario( scenario.tasks_scenario );
 
-    empty_bound_test();
+    scenario = new();
+    scenario.set_probability(0, 0, 100, 0);
+    scenario.get_tasks_scenario( 20 );
+    scenario.set_probability(0, 100, 0, 0);
+    scenario.get_tasks_scenario( 1 );
+    scenario.set_probability(0, 0, 100, 0);
+    scenario.get_tasks_scenario( 2 );
+    run_tasks_scenario( scenario.tasks_scenario );
+
     repeat(5) @( posedge clk_i );
 
     $display( "Test successfully passed" );
     $stop();
   end
 
-endmodule : fifo_tb
+endmodule

@@ -11,7 +11,6 @@ add wave -noupdate /fifo_tb/alt_fifo_empty_o
 add wave -noupdate /fifo_tb/alt_fifo_full_o
 add wave -noupdate -radix unsigned /fifo_tb/alt_fifo_usedw_o
 add wave -noupdate -divider {Custom SCFIFO}
-add wave -noupdate /fifo_tb/custom_fifo_rdreq_i
 add wave -noupdate /fifo_tb/custom_fifo_q_o
 add wave -noupdate /fifo_tb/custom_fifo_empty_o
 add wave -noupdate /fifo_tb/custom_fifo_full_o
